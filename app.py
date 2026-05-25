@@ -23,16 +23,14 @@ st.markdown(
 
 # --- SIDEBAR: CREDENCIALES ---
 with st.sidebar:
-    st.header("🔑 Credenciales")
-
-    st.subheader("🤖 LLM (Groq)")
-    groq_key = st.text_input(
+    st.header("🤖 LLM")
+    llm_key = st.text_input(
         "Groq API Key",
         type="password",
         help="Gratis en https://console.groq.com/keys"
     )
 
-    st.subheader("📊 Google Ads")
+    st.header("📊 Google Ads")
     developer_token = st.text_input(
         "Developer Token",
         type="password"
@@ -64,15 +62,15 @@ with st.sidebar:
 
 # --- VALIDAR CREDENCIALES ---
 all_creds = all([
-    groq_key, developer_token, client_id,
+    llm_key, developer_token, client_id,
     client_secret, refresh_token, customer_id
 ])
 
 
-def get_groq_client():
-    """Crea el cliente de Groq (compatible con OpenAI)."""
+def get_llm_client():
+    """Crea el cliente LLM via Groq."""
     return OpenAI(
-        api_key=groq_key,
+        api_key=llm_key,
         base_url="https://api.groq.com/openai/v1"
     )
 
@@ -127,10 +125,12 @@ def run_gaql_query(query_text):
         if rows:
             df = pd.DataFrame(rows)
 
-            # --- CONVERSIÓN DE MICROS A EUROS ---
-            for col in df.columns:
+            # --- CONVERSION DE MICROS A EUROS ---
+            for col in list(df.columns):
                 if "micros" in col.lower():
-                    new_col = col.replace("_micros", "").replace("micros", "")
+                    new_col = col.replace(
+                        "_micros", ""
+                    ).replace("micros", "")
                     new_col = new_col + "_EUR"
                     df[new_col] = pd.to_numeric(
                         df[col], errors="coerce"
@@ -142,17 +142,25 @@ def run_gaql_query(query_text):
             rename_map = {}
             for col in df.columns:
                 clean = col
-                # Quitar prefijos largos
                 clean = clean.replace("metrics_", "")
-                clean = clean.replace("campaign_", "campaign_")
                 clean = clean.replace("segments_", "")
-                clean = clean.replace("shoppingPerformanceView_", "")
                 rename_map[col] = clean
             df = df.rename(columns=rename_map)
 
+            # --- ELIMINAR COLUMNAS TODO CEROS ---
+            cols_to_drop = []
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64']:
+                    if (df[col] == 0).all():
+                        cols_to_drop.append(col)
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+
             return df, None
         else:
-            return pd.DataFrame(), "La query no devolvio resultados."
+            return pd.DataFrame(), (
+                "La query no devolvio resultados."
+            )
 
     except GoogleAdsException as ex:
         errors = []
@@ -162,53 +170,50 @@ def run_gaql_query(query_text):
     except Exception as e:
         return pd.DataFrame(), str(e)
 
+
 SYSTEM_PROMPT = (
     "Eres un experto en Google Ads Query Language (GAQL). "
     "Tu trabajo es convertir preguntas en lenguaje natural "
     "a queries GAQL validas.\n\n"
     "REGLAS IMPORTANTES:\n"
-    "- Devuelve SOLO la query GAQL, sin explicaciones ni markdown.\n"
-    "- No uses comillas de bloque ni backticks.\n"
-    "- Usa SOLO recursos, metricas y segmentos validos "
+    "- Devuelve SOLO la query GAQL, sin explicaciones.\n"
+    "- No uses backticks ni markdown.\n"
+    "- Usa recursos, metricas y segmentos validos "
     "de Google Ads API v19.\n"
-    "- Para costes usa metrics.cost_micros "
-    "(divide entre 1000000 para euros).\n"
-    "- Para fechas usa segments.date y WHERE "
-    "con formato YYYY-MM-DD.\n"
+    "- Para costes usa metrics.cost_micros.\n"
+    "- Para fechas usa segments.date con YYYY-MM-DD.\n"
     "- Para campanias activas: campaign.status = 'ENABLED'\n"
     "- Para Shopping: "
     "campaign.advertising_channel_type = 'SHOPPING'\n"
     "- Para PMAX: "
     "campaign.advertising_channel_type = 'PERFORMANCE_MAX'\n"
-    "- Para productos usa shopping_performance_view "
-    "como recurso FROM.\n"
-    "- Segmentos de tiempo validos: LAST_7_DAYS, LAST_30_DAYS, "
+    "- Para productos usa shopping_performance_view.\n"
+    "- Segmentos de tiempo: LAST_7_DAYS, LAST_30_DAYS, "
     "THIS_MONTH, LAST_MONTH, TODAY, YESTERDAY.\n"
-    "- Si piden datos por dia, incluye segments.date en SELECT.\n"
-    "- Si piden datos por campania, incluye campaign.name "
-    "en SELECT.\n"
-    "- ORDER BY solo puede usar campos que esten en SELECT.\n\n"
-    "RECURSOS PRINCIPALES:\n"
-    "- campaign: campanias (id, name, status, "
-    "advertising_channel_type)\n"
+    "- Si piden datos por dia, incluye segments.date.\n"
+    "- Si piden datos por campania, incluye campaign.name.\n"
+    "- ORDER BY solo con campos en SELECT.\n\n"
+    "RECURSOS:\n"
+    "- campaign: id, name, status, "
+    "advertising_channel_type\n"
     "- ad_group: grupos de anuncios\n"
     "- ad_group_ad: anuncios\n"
-    "- shopping_performance_view: datos de productos "
-    "Shopping/PMAX\n"
+    "- shopping_performance_view: productos Shopping/PMAX\n"
     "- keyword_view: keywords\n"
-    "- segments.date: fecha\n"
-    "- segments.product_title: titulo de producto\n\n"
-    "METRICAS COMUNES:\n"
-    "- metrics.impressions, metrics.clicks, metrics.cost_micros\n"
+    "- segments.date, segments.product_title\n\n"
+    "METRICAS:\n"
+    "- metrics.impressions, metrics.clicks, "
+    "metrics.cost_micros\n"
     "- metrics.conversions, metrics.conversions_value\n"
     "- metrics.ctr, metrics.average_cpc\n"
-    "- metrics.all_conversions, metrics.all_conversions_value\n\n"
+    "- metrics.all_conversions, "
+    "metrics.all_conversions_value\n\n"
     "EJEMPLOS:\n"
     "Pregunta: Coste por campania este mes\n"
     "Query: SELECT campaign.name, metrics.cost_micros "
     "FROM campaign WHERE segments.date DURING THIS_MONTH "
     "AND campaign.status = 'ENABLED'\n\n"
-    "Pregunta: Top 10 productos con mas clics ultimos 7 dias\n"
+    "Pregunta: Top 10 productos ultimos 7 dias\n"
     "Query: SELECT segments.product_title, metrics.clicks, "
     "metrics.impressions, metrics.cost_micros "
     "FROM shopping_performance_view "
@@ -224,7 +229,7 @@ SYSTEM_PROMPT = (
 
 def ask_llm_for_gaql(user_question, error_feedback=None):
     """Pide al LLM que genere una query GAQL."""
-    client = get_groq_client()
+    client = get_llm_client()
 
     user_msg = "Pregunta del usuario: " + user_question
     if error_feedback:
@@ -255,7 +260,7 @@ def ask_llm_for_gaql(user_question, error_feedback=None):
 
 def ask_llm_to_explain(user_question, df):
     """Pide al LLM que explique los resultados."""
-    client = get_groq_client()
+    client = get_llm_client()
 
     if len(df) > 50:
         data_str = df.head(50).to_string(index=False)
@@ -270,24 +275,36 @@ def ask_llm_to_explain(user_question, df):
 
     prompt = (
         "El usuario pregunto: " + user_question + "\n\n"
-        "Estos son los datos obtenidos de Google Ads:\n\n"
+        "Datos de Google Ads:\n\n"
         + data_str + "\n\n"
         "INSTRUCCIONES:\n"
-        "- Responde en espanol, de forma clara y concisa.\n"
-        "- Si hay cost_micros, conviertelo a euros "
-        "(divide entre 1000000) y usa el simbolo del euro.\n"
-        "- Destaca los datos mas relevantes.\n"
-        "- Si hay tendencias o insights interesantes, "
-        "mencionalos.\n"
-        "- Usa formato markdown con negritas y listas "
-        "si es util.\n"
-        "- No repitas toda la tabla, resume los puntos clave.\n"
+        "- Responde en espanol, claro y conciso.\n"
+        "- Las columnas que terminan en _EUR YA ESTAN "
+        "EN EUROS. NO dividas entre 1000000. "
+        "Usa los valores tal cual estan en la tabla.\n"
+        "- Por ejemplo si cost_EUR dice 15258.07, "
+        "el coste es 15.258,07 euros.\n"
+        "- Usa formato europeo: punto para miles, "
+        "coma para decimales (ej: 1.234,56 EUR).\n"
+        "- Destaca datos relevantes.\n"
+        "- Menciona tendencias o insights.\n"
+        "- Usa formato markdown con negritas y listas.\n"
+        "- Resume, no repitas toda la tabla.\n"
     )
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "Eres un analista de Google Ads experto. Respondes siempre en espanol."},
+            {
+                "role": "system",
+                "content": (
+                    "Eres un analista de Google Ads. "
+                    "Respondes siempre en espanol. "
+                    "Los datos que recibes YA estan "
+                    "convertidos a euros. NO hagas "
+                    "ninguna conversion adicional."
+                )
+            },
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
@@ -316,22 +333,22 @@ for message in st.session_state.messages:
 # --- CHAT ---
 if not all_creds:
     st.info(
-        "👈 Introduce tus credenciales en el sidebar para empezar."
+        "👈 Introduce tus credenciales en el sidebar."
     )
     st.markdown(
         """
         ### 💡 Ejemplos de preguntas:
 
-        | Pregunta | Que obtendras |
+        | Pregunta | Resultado |
         |---|---|
         | *Cuanto gaste ayer?* | Coste total |
-        | *Top 10 productos con mas clics esta semana* | Ranking Shopping/PMAX |
+        | *Top 10 productos con mas clics esta semana* | Ranking |
         | *Gasto diario ultimos 30 dias* | Tabla coste/dia |
-        | *Que campanias estan activas?* | Lista de campanias |
-        | *Conversiones del ultimo mes por campania* | Rendimiento |
+        | *Que campanias estan activas?* | Lista |
+        | *Conversiones del ultimo mes* | Rendimiento |
         | *Productos con mas impresiones en PMAX* | Top productos |
 
-        ### 🔑 Credenciales necesarias:
+        ### 🔑 Necesitas:
         1. **Groq API Key** → gratis en https://console.groq.com/keys
         2. **Google Ads** → Developer Token, Client ID/Secret, Refresh Token
         3. **Customer IDs** → Account ID + MCC ID (sin guiones)
@@ -339,7 +356,7 @@ if not all_creds:
     )
 else:
     user_input = st.chat_input(
-        "Pregunta lo que quieras sobre tus campanias..."
+        "Pregunta sobre tus campanias..."
     )
 
     if user_input:
@@ -355,7 +372,9 @@ else:
             with st.spinner("🤔 Generando query..."):
                 gaql = ask_llm_for_gaql(user_input)
 
-            st.caption("Ejecutando consulta en Google Ads...")
+            st.caption(
+                "Ejecutando consulta en Google Ads..."
+            )
 
             with st.spinner("📊 Consultando Google Ads..."):
                 df, error = run_gaql_query(gaql)
@@ -369,8 +388,7 @@ else:
 
             if error:
                 response_text = (
-                    "❌ No pude obtener los datos. "
-                    "Error: " + error + "\n\n"
+                    "❌ Error: " + error + "\n\n"
                     "Prueba a reformular la pregunta."
                 )
                 st.markdown(response_text)
