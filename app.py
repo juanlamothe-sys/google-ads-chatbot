@@ -125,7 +125,32 @@ def run_gaql_query(query_text):
                 rows.append(row_dict)
 
         if rows:
-            return pd.DataFrame(rows), None
+            df = pd.DataFrame(rows)
+
+            # --- CONVERSIÓN DE MICROS A EUROS ---
+            for col in df.columns:
+                if "micros" in col.lower():
+                    new_col = col.replace("_micros", "").replace("micros", "")
+                    new_col = new_col + "_EUR"
+                    df[new_col] = pd.to_numeric(
+                        df[col], errors="coerce"
+                    ) / 1_000_000
+                    df[new_col] = df[new_col].round(2)
+                    df = df.drop(columns=[col])
+
+            # --- LIMPIAR NOMBRES DE COLUMNAS ---
+            rename_map = {}
+            for col in df.columns:
+                clean = col
+                # Quitar prefijos largos
+                clean = clean.replace("metrics_", "")
+                clean = clean.replace("campaign_", "campaign_")
+                clean = clean.replace("segments_", "")
+                clean = clean.replace("shoppingPerformanceView_", "")
+                rename_map[col] = clean
+            df = df.rename(columns=rename_map)
+
+            return df, None
         else:
             return pd.DataFrame(), "La query no devolvio resultados."
 
@@ -136,7 +161,6 @@ def run_gaql_query(query_text):
         return pd.DataFrame(), " | ".join(errors)
     except Exception as e:
         return pd.DataFrame(), str(e)
-
 
 SYSTEM_PROMPT = (
     "Eres un experto en Google Ads Query Language (GAQL). "
