@@ -1,6 +1,6 @@
 streamlit
 google-ads
-google-generativeai
+openai
 pandas
 openpyxl
 protobuf
