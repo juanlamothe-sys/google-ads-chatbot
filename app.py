@@ -145,7 +145,7 @@ def run_gaql_query(query_text):
 def ask_gemini_for_gaql(user_question, error_feedback=None):
     """Pide a Gemini que genere una query GAQL."""
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
     system_prompt = (
         "Eres un experto en Google Ads Query Language (GAQL). "
