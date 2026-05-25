@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import google.generativeai as genai
+from openai import OpenAI
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 from datetime import date
@@ -21,51 +21,39 @@ st.markdown(
     "costes, conversiones, productos..."
 )
 
-# --- MERCHANTS PREDEFINIDOS ---
-MERCHANTS = {
-    "MediaMarkt (171)": 171,
-    "Amazon (11)": 11,
-    "PcComponentes (389)": 389,
-    "El Corte Ingles (456)": 456,
-    "Otro (manual)": 0,
-}
-
 # --- SIDEBAR: CREDENCIALES ---
 with st.sidebar:
     st.header("🔑 Credenciales")
 
-    gemini_key = st.text_input(
-        "Gemini API Key",
+    st.subheader("🤖 LLM (Groq)")
+    groq_key = st.text_input(
+        "Groq API Key",
         type="password",
-        help="Consiguela en https://aistudio.google.com/apikey"
+        help="Gratis en https://console.groq.com/keys"
     )
+
+    st.subheader("📊 Google Ads")
     developer_token = st.text_input(
         "Developer Token",
-        type="password",
-        help="Google Ads MCC -> Admin -> API Center"
+        type="password"
     )
     client_id = st.text_input(
         "Client ID",
-        type="password",
-        help="Google Cloud Console -> Credenciales"
+        type="password"
     )
     client_secret = st.text_input(
         "Client Secret",
-        type="password",
-        help="Google Cloud Console -> Credenciales"
+        type="password"
     )
     refresh_token = st.text_input(
         "Refresh Token",
-        type="password",
-        help="Generado en OAuth Playground"
+        type="password"
     )
     customer_id = st.text_input(
-        "Customer ID (sin guiones)",
-        help="ID de 10 digitos de la cuenta de Google Ads"
+        "Customer ID (sin guiones)"
     )
     login_customer_id = st.text_input(
-        "Login Customer ID (MCC)",
-        help="ID de 10 digitos de tu cuenta Manager"
+        "Login Customer ID (MCC)"
     )
 
     st.divider()
@@ -76,9 +64,17 @@ with st.sidebar:
 
 # --- VALIDAR CREDENCIALES ---
 all_creds = all([
-    gemini_key, developer_token, client_id,
+    groq_key, developer_token, client_id,
     client_secret, refresh_token, customer_id
 ])
+
+
+def get_groq_client():
+    """Crea el cliente de Groq (compatible con OpenAI)."""
+    return OpenAI(
+        api_key=groq_key,
+        base_url="https://api.groq.com/openai/v1"
+    )
 
 
 def get_google_ads_client():
@@ -142,69 +138,69 @@ def run_gaql_query(query_text):
         return pd.DataFrame(), str(e)
 
 
-def ask_gemini_for_gaql(user_question, error_feedback=None):
-    """Pide a Gemini que genere una query GAQL."""
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
+SYSTEM_PROMPT = (
+    "Eres un experto en Google Ads Query Language (GAQL). "
+    "Tu trabajo es convertir preguntas en lenguaje natural "
+    "a queries GAQL validas.\n\n"
+    "REGLAS IMPORTANTES:\n"
+    "- Devuelve SOLO la query GAQL, sin explicaciones ni markdown.\n"
+    "- No uses comillas de bloque ni backticks.\n"
+    "- Usa SOLO recursos, metricas y segmentos validos "
+    "de Google Ads API v19.\n"
+    "- Para costes usa metrics.cost_micros "
+    "(divide entre 1000000 para euros).\n"
+    "- Para fechas usa segments.date y WHERE "
+    "con formato YYYY-MM-DD.\n"
+    "- Para campanias activas: campaign.status = 'ENABLED'\n"
+    "- Para Shopping: "
+    "campaign.advertising_channel_type = 'SHOPPING'\n"
+    "- Para PMAX: "
+    "campaign.advertising_channel_type = 'PERFORMANCE_MAX'\n"
+    "- Para productos usa shopping_performance_view "
+    "como recurso FROM.\n"
+    "- Segmentos de tiempo validos: LAST_7_DAYS, LAST_30_DAYS, "
+    "THIS_MONTH, LAST_MONTH, TODAY, YESTERDAY.\n"
+    "- Si piden datos por dia, incluye segments.date en SELECT.\n"
+    "- Si piden datos por campania, incluye campaign.name "
+    "en SELECT.\n"
+    "- ORDER BY solo puede usar campos que esten en SELECT.\n\n"
+    "RECURSOS PRINCIPALES:\n"
+    "- campaign: campanias (id, name, status, "
+    "advertising_channel_type)\n"
+    "- ad_group: grupos de anuncios\n"
+    "- ad_group_ad: anuncios\n"
+    "- shopping_performance_view: datos de productos "
+    "Shopping/PMAX\n"
+    "- keyword_view: keywords\n"
+    "- segments.date: fecha\n"
+    "- segments.product_title: titulo de producto\n\n"
+    "METRICAS COMUNES:\n"
+    "- metrics.impressions, metrics.clicks, metrics.cost_micros\n"
+    "- metrics.conversions, metrics.conversions_value\n"
+    "- metrics.ctr, metrics.average_cpc\n"
+    "- metrics.all_conversions, metrics.all_conversions_value\n\n"
+    "EJEMPLOS:\n"
+    "Pregunta: Coste por campania este mes\n"
+    "Query: SELECT campaign.name, metrics.cost_micros "
+    "FROM campaign WHERE segments.date DURING THIS_MONTH "
+    "AND campaign.status = 'ENABLED'\n\n"
+    "Pregunta: Top 10 productos con mas clics ultimos 7 dias\n"
+    "Query: SELECT segments.product_title, metrics.clicks, "
+    "metrics.impressions, metrics.cost_micros "
+    "FROM shopping_performance_view "
+    "WHERE segments.date DURING LAST_7_DAYS "
+    "ORDER BY metrics.clicks DESC LIMIT 10\n\n"
+    "Pregunta: Gasto diario ultimos 30 dias\n"
+    "Query: SELECT segments.date, metrics.cost_micros "
+    "FROM campaign WHERE segments.date DURING LAST_30_DAYS "
+    "AND campaign.status = 'ENABLED' "
+    "ORDER BY segments.date DESC"
+)
 
-    system_prompt = (
-        "Eres un experto en Google Ads Query Language (GAQL). "
-        "Tu trabajo es convertir preguntas en lenguaje natural "
-        "a queries GAQL validas.\n\n"
-        "REGLAS IMPORTANTES:\n"
-        "- Devuelve SOLO la query GAQL, sin explicaciones ni markdown.\n"
-        "- No uses comillas de bloque ni backticks.\n"
-        "- Usa SOLO recursos, metricas y segmentos validos "
-        "de Google Ads API v19.\n"
-        "- Para costes usa metrics.cost_micros "
-        "(divide entre 1000000 para euros).\n"
-        "- Para fechas usa segments.date y WHERE "
-        "con formato YYYY-MM-DD.\n"
-        "- Para campanias activas: campaign.status = 'ENABLED'\n"
-        "- Para Shopping: "
-        "campaign.advertising_channel_type = 'SHOPPING'\n"
-        "- Para PMAX: "
-        "campaign.advertising_channel_type = 'PERFORMANCE_MAX'\n"
-        "- Para productos usa shopping_performance_view "
-        "como recurso FROM.\n"
-        "- Segmentos de tiempo validos: LAST_7_DAYS, LAST_30_DAYS, "
-        "THIS_MONTH, LAST_MONTH, TODAY, YESTERDAY.\n"
-        "- Si piden datos por dia, incluye segments.date en SELECT.\n"
-        "- Si piden datos por campania, incluye campaign.name "
-        "en SELECT.\n"
-        "- ORDER BY solo puede usar campos que esten en SELECT.\n\n"
-        "RECURSOS PRINCIPALES:\n"
-        "- campaign: campanias (id, name, status, "
-        "advertising_channel_type)\n"
-        "- ad_group: grupos de anuncios\n"
-        "- ad_group_ad: anuncios\n"
-        "- shopping_performance_view: datos de productos "
-        "Shopping/PMAX\n"
-        "- keyword_view: keywords\n"
-        "- segments.date: fecha\n"
-        "- segments.product_title: titulo de producto\n\n"
-        "METRICAS COMUNES:\n"
-        "- metrics.impressions, metrics.clicks, metrics.cost_micros\n"
-        "- metrics.conversions, metrics.conversions_value\n"
-        "- metrics.ctr, metrics.average_cpc\n"
-        "- metrics.all_conversions, metrics.all_conversions_value\n\n"
-        "EJEMPLOS:\n"
-        "Pregunta: Coste por campania este mes\n"
-        "Query: SELECT campaign.name, metrics.cost_micros "
-        "FROM campaign WHERE segments.date DURING THIS_MONTH "
-        "AND campaign.status = 'ENABLED'\n\n"
-        "Pregunta: Top 10 productos con mas clics ultimos 7 dias\n"
-        "Query: SELECT segments.product_title, metrics.clicks, "
-        "metrics.impressions, metrics.cost_micros "
-        "FROM shopping_performance_view "
-        "WHERE segments.date DURING LAST_7_DAYS "
-        "ORDER BY metrics.clicks DESC LIMIT 10\n\n"
-        "Pregunta: Gasto diario ultimos 30 dias\n"
-        "Query: SELECT segments.date, metrics.cost_micros "
-        "FROM campaign WHERE segments.date DURING LAST_30_DAYS "
-        "AND campaign.status = 'ENABLED' "
-        "ORDER BY segments.date DESC"
-    )
+
+def ask_llm_for_gaql(user_question, error_feedback=None):
+    """Pide al LLM que genere una query GAQL."""
+    client = get_groq_client()
 
     user_msg = "Pregunta del usuario: " + user_question
     if error_feedback:
@@ -215,10 +211,17 @@ def ask_gemini_for_gaql(user_question, error_feedback=None):
             + "\nPor favor corrige la query."
         )
 
-    response = model.generate_content(
-        [system_prompt, user_msg]
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg}
+        ],
+        temperature=0,
+        max_tokens=500
     )
-    gaql = response.text.strip()
+
+    gaql = response.choices[0].message.content.strip()
     gaql = gaql.replace("```sql", "")
     gaql = gaql.replace("```gaql", "")
     gaql = gaql.replace("```", "")
@@ -226,10 +229,9 @@ def ask_gemini_for_gaql(user_question, error_feedback=None):
     return gaql
 
 
-def ask_gemini_to_explain(user_question, df):
-    """Pide a Gemini que explique los resultados."""
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+def ask_llm_to_explain(user_question, df):
+    """Pide al LLM que explique los resultados."""
+    client = get_groq_client()
 
     if len(df) > 50:
         data_str = df.head(50).to_string(index=False)
@@ -258,8 +260,17 @@ def ask_gemini_to_explain(user_question, df):
         "- No repitas toda la tabla, resume los puntos clave.\n"
     )
 
-    response = model.generate_content(prompt)
-    return response.text
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "Eres un analista de Google Ads experto. Respondes siempre en espanol."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3,
+        max_tokens=1000
+    )
+
+    return response.choices[0].message.content
 
 
 # --- HISTORIAL DE CHAT ---
@@ -285,7 +296,7 @@ if not all_creds:
     )
     st.markdown(
         """
-        ### 💡 Ejemplos de preguntas que podras hacer:
+        ### 💡 Ejemplos de preguntas:
 
         | Pregunta | Que obtendras |
         |---|---|
@@ -294,9 +305,12 @@ if not all_creds:
         | *Gasto diario ultimos 30 dias* | Tabla coste/dia |
         | *Que campanias estan activas?* | Lista de campanias |
         | *Conversiones del ultimo mes por campania* | Rendimiento |
-        | *CTR medio por campania esta semana* | Click-through rate |
         | *Productos con mas impresiones en PMAX* | Top productos |
-        | *Comparar coste PMAX vs Shopping este mes* | Comparativa |
+
+        ### 🔑 Credenciales necesarias:
+        1. **Groq API Key** → gratis en https://console.groq.com/keys
+        2. **Google Ads** → Developer Token, Client ID/Secret, Refresh Token
+        3. **Customer IDs** → Account ID + MCC ID (sin guiones)
         """
     )
 else:
@@ -305,7 +319,6 @@ else:
     )
 
     if user_input:
-        # Mensaje del usuario
         st.session_state.messages.append({
             "role": "user",
             "content": user_input
@@ -313,28 +326,23 @@ else:
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Respuesta
         with st.chat_message("assistant"):
 
-            # 1. Generar GAQL
             with st.spinner("🤔 Generando query..."):
-                gaql = ask_gemini_for_gaql(user_input)
+                gaql = ask_llm_for_gaql(user_input)
 
             st.caption("Ejecutando consulta en Google Ads...")
 
-            # 2. Ejecutar query
             with st.spinner("📊 Consultando Google Ads..."):
                 df, error = run_gaql_query(gaql)
 
-            # 3. Si hay error, reintentar
             if error:
                 with st.spinner("⚠️ Corrigiendo query..."):
-                    gaql = ask_gemini_for_gaql(
+                    gaql = ask_llm_for_gaql(
                         user_input, error
                     )
                     df, error = run_gaql_query(gaql)
 
-            # 4. Mostrar resultados
             if error:
                 response_text = (
                     "❌ No pude obtener los datos. "
@@ -368,23 +376,19 @@ else:
                 })
 
             else:
-                # Tabla
                 st.dataframe(
                     df, use_container_width=True
                 )
 
-                # Query usada
                 with st.expander("🔍 Query GAQL ejecutada"):
                     st.code(gaql, language="sql")
 
-                # Explicacion con Gemini
                 with st.spinner("💡 Analizando..."):
-                    explanation = ask_gemini_to_explain(
+                    explanation = ask_llm_to_explain(
                         user_input, df
                     )
                 st.markdown(explanation)
 
-                # Descarga
                 buffer = io.BytesIO()
                 df.to_excel(
                     buffer,
