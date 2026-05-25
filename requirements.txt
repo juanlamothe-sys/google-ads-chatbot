@@ -1,0 +1,6 @@
+streamlit
+google-ads
+google-generativeai
+pandas
+openpyxl
+protobuf
